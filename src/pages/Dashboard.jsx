@@ -47,25 +47,17 @@ const Dashboard = ({ childProfiles, setChildProfiles, activeChildIndex, setActiv
             });
 
             if (response.ok) {
-                const data = await response.json();
+                // Fetch updated children list to get the real database IDs for vaccines
+                const fetchRes = await fetch('http://localhost:5000/api/children', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
 
-                const newChild = {
-                    id: data.childId,
-                    name: name,
-                    dob: dob,
-                    gender: gender,
-                    bloodGroup: formData.get('bloodGroup'),
-                    avatarUrl: avatarUrl,
-                    progress: 0,
-                    completed: 0,
-                    upcoming: generatedVaccines.filter(v => v.status === 'upcoming').length,
-                    missed: generatedVaccines.filter(v => v.status === 'missed').length,
-                    vaccines: generatedVaccines
-                };
-
-                const newChildren = [...children, newChild];
-                setChildProfiles(newChildren);
-                setActiveChildIndex(newChildren.length - 1);
+                if (fetchRes.ok) {
+                    const data = await fetchRes.json();
+                    setChildProfiles(data.children || []);
+                    setActiveChildIndex((data.children || []).length - 1);
+                }
+                
                 setShowAddModal(false);
             } else {
                 console.error('Failed to add child');

@@ -35,17 +35,9 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
         avatarUrl: activeChild.avatarUrl || `https://ui-avatars.com/api/?name=${activeChild.name}&background=${(activeChild.gender && (activeChild.gender.toLowerCase() === 'male' || activeChild.gender.toLowerCase() === 'boy')) ? 'C4D9FF' : (activeChild.gender && (activeChild.gender.toLowerCase() === 'female' || activeChild.gender.toLowerCase() === 'girl')) ? 'F5AFAF' : 'ec5b13'}&color=fff&size=128&rounded=false`
     } : defaultChild;
 
-    const vaccines = activeChild && activeChild.vaccines && activeChild.vaccines.length > 0 ? activeChild.vaccines.map(v => ({
-        id: v.id,
-        name: v.name,
-        dose: v.fullForm || v.when, // Fallback dose string if fullForm is undefined
-        recommendedAge: v.when,
-        dueDate: new Date(v.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-        status: v.status === 'due' ? 'upcoming' : v.status, // simplifying exact due to upcoming for filter
-        action: v.status === 'done' ? 'view-details' : (v.status === 'missed' ? 'recovery' : 'mark-done'),
-    })) : [
+    const [fallbackVaccines, setFallbackVaccines] = useState([
         {
-            id: 1,
+            id: 'dummy-1',
             name: 'DTP',
             dose: '4th Dose',
             recommendedAge: '15-18 Months',
@@ -54,6 +46,7 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
             action: 'recovery',
         },
         {
+            id: 'dummy-2',
             name: 'MMR',
             dose: '1st Dose',
             recommendedAge: '12-15 Months',
@@ -62,14 +55,37 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
             action: 'mark-done',
         },
         {
+            id: 'dummy-3',
             name: 'Hepatitis B',
             dose: '3rd Dose',
             recommendedAge: '6-18 Months',
             dueDate: '04 Sep 2023',
             status: 'done',
             action: 'view-details',
+            hospitalName: 'City Hospital',
+            doctorName: 'Dr. Smith',
+            dateAdministered: '2023-09-04',
+            notes: 'Fever next day, given paracetamol'
         },
-    ];
+    ]);
+
+    const vaccines = activeChild && activeChild.vaccines && activeChild.vaccines.length > 0 ? activeChild.vaccines.map(v => ({
+        id: v.id,
+        name: v.name,
+        dose: v.fullForm || v.when, // Fallback dose string if fullForm is undefined
+        recommendedAge: v.when,
+        dueDate: new Date(v.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        hospitalName: v.hospitalName,
+        doctorName: v.doctorName,
+        notes: v.notes,
+        proofUrl: v.proofUrl,
+        dateAdministered: v.dateAdministered,
+        status: v.status === 'due' ? 'upcoming' : v.status, // simplifying exact due to upcoming for filter
+        action: v.status === 'done' ? 'view-details' : (v.status === 'missed' ? 'recovery' : 'mark-done'),
+    })) : fallbackVaccines;
+
+    const [markDoneModal, setMarkDoneModal] = useState({ show: false, vaccine: null });
+    const [viewDetailsModal, setViewDetailsModal] = useState({ show: false, vaccine: null });
 
     const milestones = childData.dob && activeChild.dob ? calculateMilestones(activeChild.dob) : [
         { age: '6 Months', label: 'Sitting Unassisted', type: 'completed', icon: 'check' },
@@ -114,13 +130,37 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
 
     const [processingId, setProcessingId] = useState(null);
 
-    const handleMarkDone = async (vaccineId) => {
-        if (!activeChild || !vaccineId) return;
+    const handleMarkDone = async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const vaccineId = markDoneModal.vaccine.id;
+        const submitData = {
+            status: 'done',
+            dateAdministered: formData.get('dateAdministered'),
+            hospitalName: formData.get('hospitalName'),
+            doctorName: formData.get('doctorName'),
+            notes: formData.get('notes'),
+            proofUrl: formData.get('proofUrl'),
+        };
+
+        if (!vaccineId) return;
+
+        if (!activeChild) {
+            setProcessingId(vaccineId);
+            setTimeout(() => {
+                setFallbackVaccines(prev => prev.map(v => 
+                    v.id === vaccineId ? { ...v, ...submitData, action: 'view-details' } : v
+                ));
+                setProcessingId(null);
+                setMarkDoneModal({ show: false, vaccine: null });
+            }, 600);
+            return;
+        }
 
         setProcessingId(vaccineId);
         try {
             const token = localStorage.getItem('token');
-            const today = new Date().toISOString().split('T')[0];
+            const today = submitData.dateAdministered || new Date().toISOString().split('T')[0];
 
             const response = await fetch(`http://localhost:5000/api/vaccines/${vaccineId}`, {
                 method: 'PUT',
@@ -128,29 +168,31 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ status: 'done', dateAdministered: today })
+                body: JSON.stringify(submitData)
             });
 
             if (response.ok) {
-                // To reflect locally without a full network fetch again immediately
                 if (childProfiles && setChildProfiles) {
                     const updatedProfiles = childProfiles.map(child => {
                         if (child.id === activeChild.id) {
                             const updatedVaccines = child.vaccines.map(vac =>
                                 vac.id === vaccineId
-                                    ? { ...vac, status: 'done', dueDate: today }
+                                    ? { ...vac, ...submitData, dueDate: today }
                                     : vac
                             );
 
                             const completed = updatedVaccines.filter(v => v.status === 'done').length;
+                            const upcoming = updatedVaccines.filter(v => v.status === 'upcoming' || v.status === 'due').length;
+                            const missed = updatedVaccines.filter(v => v.status === 'missed').length;
                             const progress = updatedVaccines.length > 0 ? Math.round((completed / updatedVaccines.length) * 100) : 0;
 
-                            return { ...child, vaccines: updatedVaccines, completed, progress };
+                            return { ...child, vaccines: updatedVaccines, completed, upcoming, missed, progress };
                         }
                         return child;
                     });
                     setChildProfiles(updatedProfiles);
                 }
+                setMarkDoneModal({ show: false, vaccine: null });
             } else {
                 console.error('Failed to update vaccine status');
             }
@@ -162,7 +204,19 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
     };
 
     const handleUndoMarkDone = async (vaccineId, vaccineName) => {
-        if (!activeChild || !vaccineId) return;
+        if (!vaccineId) return;
+
+        if (!activeChild) {
+            // Mock undo for dummy data
+            setProcessingId(vaccineId);
+            setTimeout(() => {
+                setFallbackVaccines(prev => prev.map(v => 
+                    v.id === vaccineId ? { ...v, status: 'upcoming', action: 'mark-done' } : v
+                ));
+                setProcessingId(null);
+            }, 600);
+            return;
+        }
 
         setProcessingId(vaccineId);
         try {
@@ -199,9 +253,11 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
                             );
 
                             const completed = updatedVaccines.filter(v => v.status === 'done').length;
+                            const upcoming = updatedVaccines.filter(v => v.status === 'upcoming' || v.status === 'due').length;
+                            const missed = updatedVaccines.filter(v => v.status === 'missed').length;
                             const progress = updatedVaccines.length > 0 ? Math.round((completed / updatedVaccines.length) * 100) : 0;
 
-                            return { ...child, vaccines: updatedVaccines, completed, progress };
+                            return { ...child, vaccines: updatedVaccines, completed, upcoming, missed, progress };
                         }
                         return child;
                     });
@@ -378,7 +434,7 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
                                                     {v.action === 'mark-done' && (
                                                         <button
                                                             className="vt-btn-mark-done"
-                                                            onClick={() => handleMarkDone(v.id)}
+                                                            onClick={() => setMarkDoneModal({ show: true, vaccine: v })}
                                                             disabled={processingId === v.id}
                                                         >
                                                             {processingId === v.id ? 'Updating...' : 'Mark Done'}
@@ -386,7 +442,10 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
                                                     )}
                                                     {v.action === 'view-details' && (
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                            <button className="vt-btn-view">
+                                                            <button 
+                                                                className="vt-btn-view"
+                                                                onClick={() => setViewDetailsModal({ show: true, vaccine: v })}
+                                                            >
                                                                 View Details
                                                                 <span className="material-symbols-outlined">chevron_right</span>
                                                             </button>
@@ -498,6 +557,100 @@ const VaccineTracker = ({ activeChild, childProfiles, setChildProfiles }) => {
                     <p className="vt-footer-copy">© 2024 VaxiCare Vaccination Services</p>
                 </div>
             </footer>
+
+            {/* Mark Done Modal */}
+            {markDoneModal.show && (
+                <div className="vt-modal-overlay">
+                    <div className="vt-modal-content">
+                        <button className="vt-modal-close" onClick={() => setMarkDoneModal({ show: false, vaccine: null })}>
+                            <span className="material-symbols-outlined">close</span>
+                        </button>
+                        <h2 className="vt-modal-title">Mark "{markDoneModal.vaccine?.name}" as Done</h2>
+                        <form className="vt-modal-form" onSubmit={handleMarkDone}>
+                            <div className="vt-form-group">
+                                <label>Date Administered <span style={{ color: "red" }}>*</span></label>
+                                <input type="date" name="dateAdministered" required defaultValue={new Date().toISOString().split('T')[0]} />
+                            </div>
+                            <div className="vt-form-group">
+                                <label>Hospital / Clinic Name</label>
+                                <input type="text" name="hospitalName" placeholder="e.g. City General Hospital" />
+                            </div>
+                            <div className="vt-form-group">
+                                <label>Doctor Name</label>
+                                <input type="text" name="doctorName" placeholder="e.g. Dr. Sarah" />
+                            </div>
+                            <div className="vt-form-group">
+                                <label>Upload Hospital Slip (Proof)</label>
+                                <input type="file" name="proofFile" accept="image/*, .pdf" onChange={(e) => {
+                                    // For Hackathon, quickly simulate upload by converting to local object URL
+                                    if(e.target.files?.[0]){
+                                        const url = URL.createObjectURL(e.target.files[0]);
+                                        // We sneak this into a hidden input to easily grab it in formData
+                                        document.getElementById('proofUrlInput').value = url;
+                                    }
+                                }} />
+                                <input type="hidden" name="proofUrl" id="proofUrlInput" />
+                            </div>
+                            <div className="vt-form-group">
+                                <label>Notes</label>
+                                <textarea name="notes" placeholder="Any side effects or notes..." rows="3"></textarea>
+                            </div>
+                            <button type="submit" className="vt-btn-modal-submit" disabled={processingId === markDoneModal.vaccine.id}>
+                                {processingId === markDoneModal.vaccine.id ? 'Saving...' : 'Save Record'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* View Details Modal */}
+            {viewDetailsModal.show && (
+                <div className="vt-modal-overlay">
+                    <div className="vt-modal-content">
+                        <button className="vt-modal-close" onClick={() => setViewDetailsModal({ show: false, vaccine: null })}>
+                            <span className="material-symbols-outlined">close</span>
+                        </button>
+                        <div className="vt-view-details-header">
+                            <span className="material-symbols-outlined teal" style={{fontSize: '48px', marginBottom: '12px'}}>verified_user</span>
+                            <h2 className="vt-modal-title" style={{marginBottom: '0'}}>Vaccine Record</h2>
+                            <p style={{color: '#64748b', fontSize: '14px', marginTop: '4px'}}>{viewDetailsModal.vaccine?.name}</p>
+                        </div>
+                        
+                        <div className="vt-view-details-grid">
+                            <div className="vt-vd-item">
+                                <p className="vt-vd-label">Status</p>
+                                <p className="vt-vd-value" style={{color: '#10b981', fontWeight: 'bold'}}>Done</p>
+                            </div>
+                            <div className="vt-vd-item">
+                                <p className="vt-vd-label">Date Administered</p>
+                                <p className="vt-vd-value">{viewDetailsModal.vaccine?.dateAdministered || viewDetailsModal.vaccine?.dueDate}</p>
+                            </div>
+                            <div className="vt-vd-item">
+                                <p className="vt-vd-label">Hospital / Clinic</p>
+                                <p className="vt-vd-value">{viewDetailsModal.vaccine?.hospitalName || 'Not recorded'}</p>
+                            </div>
+                            <div className="vt-vd-item">
+                                <p className="vt-vd-label">Doctor Name</p>
+                                <p className="vt-vd-value">{viewDetailsModal.vaccine?.doctorName || 'Not recorded'}</p>
+                            </div>
+                            <div className="vt-vd-item" style={{gridColumn: '1 / -1'}}>
+                                <p className="vt-vd-label">Notes</p>
+                                <p className="vt-vd-value">{viewDetailsModal.vaccine?.notes || 'No notes added.'}</p>
+                            </div>
+                        </div>
+
+                        {viewDetailsModal.vaccine?.proofUrl && (
+                            <div className="vt-vd-attachment">
+                                <p className="vt-vd-label" style={{marginBottom: '8px'}}>Hospital Slip Attachment</p>
+                                <a href={viewDetailsModal.vaccine.proofUrl} target="_blank" rel="noreferrer" className="vt-attachment-btn">
+                                    <span className="material-symbols-outlined">visibility</span>
+                                    Preview Uploaded Proof
+                                </a>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </>
     );
 };
